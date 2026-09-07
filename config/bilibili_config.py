@@ -55,7 +55,9 @@ BILI_SEARCH_MODE = "normal"
 BILI_QN = 80
 
 # Whether to crawl user information
-CREATOR_MODE = True
+# False: creator 模式走 get_all_creator_details → 抓全部动态（含视频/图文/文字帖）
+# True: creator 模式仅抓视频投稿列表
+CREATOR_MODE = False
 
 # Start crawling user information page number
 START_CONTACTS_PAGE = 1
@@ -64,4 +66,4 @@ START_CONTACTS_PAGE = 1
 CRAWLER_MAX_CONTACTS_COUNT_SINGLENOTES = 100
 
 # Maximum number of crawled dynamics for a single video/post
-CRAWLER_MAX_DYNAMICS_COUNT_SINGLENOTES = 50
+CRAWLER_MAX_DYNAMICS_COUNT_SINGLENOTES = 30

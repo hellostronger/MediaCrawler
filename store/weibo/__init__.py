@@ -103,6 +103,10 @@ async def update_weibo_note(note_item: Dict):
         "nickname": mask_nickname(user_info.get("screen_name", "")),
         "source_keyword": source_keyword_var.get(),
     }
+    # 本地自用扩展字段：真实 user_id（creator 模式下用于把微博归属到监听列表里的博主；
+    # JSONL 模式直接透传，DB 模式由模型可空列承接）
+    if user_info.get("id") is not None:
+        save_content_item["creator_uid"] = str(user_info.get("id"))
     utils.logger.info(f"[store.weibo.update_weibo_note] weibo note id:{note_id}, title:{save_content_item.get('content')[:24]} ...")
     await WeibostoreFactory.create_store().store_content(content_item=save_content_item)
 

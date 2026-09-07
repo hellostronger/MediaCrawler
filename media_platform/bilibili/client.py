@@ -267,6 +267,19 @@ class BilibiliClient(AbstractApiClient, ProxyRefreshMixin):
         post_data = {"oid": video_id, "mode": order_mode.value, "type": 1, "ps": 20, "next": next}
         return await self.get(uri, post_data)
 
+    async def get_dynamic_comments(self, dynamic_id: str, next: int = 0) -> Dict:
+        """get comments of a text/image dynamic (not a video)
+
+        For pure text/image dynamics the reply area uses resource type 17,
+        while video pages use type 1 (see get_video_comments).
+        :param dynamic_id: dynamic ID (same as oid for type=17 replies)
+        :param next: Comment page selection
+        :return:
+        """
+        uri = "/x/v2/reply/wbi/main"
+        post_data = {"oid": dynamic_id, "mode": CommentOrderType.DEFAULT.value, "type": 17, "ps": 20, "next": next}
+        return await self.get(uri, post_data)
+
     async def get_video_all_comments(
         self,
         video_id: str,
@@ -515,7 +528,34 @@ class BilibiliClient(AbstractApiClient, ProxyRefreshMixin):
             "platform": "web",
         }
 
-        return await self.get(uri, post_data)
+        try:
+            return await self.get(uri, post_data)
+        except DataFetchError as e:
+            # B站对该接口启用了客户端指纹风控：httpx/curl 的 TLS 指纹一律回 412
+            # （/x/v2/reply 等其他接口不受影响）。改用已打开的登录浏览器页面直接
+            # fetch——真 Chrome 指纹 + 完整 cookie，与用户手动刷动态完全同构。
+            utils.logger.warning(
+                f"[BilibiliClient.get_creator_dynamics] httpx request blocked ({e}), fallback to browser page fetch"
+            )
+            res = await self._page_fetch_json(f"{self._host}{uri}?{urlencode(post_data)}")
+            if res.get("code") != 0:
+                raise DataFetchError(f"browser page fetch failed: code={res.get('code')} msg={res.get('message')}")
+            return res.get("data") or {}
+
+    async def _page_fetch_json(self, url: str) -> Dict:
+        """在已打开的 bilibili 页面上下文里发 fetch，返回完整 JSON（含 code/message/data）。"""
+        res = await self.playwright_page.evaluate(
+            """async (url) => {
+                try {
+                    const r = await fetch(url, {credentials: 'include'});
+                    const text = await r.text();
+                    try { return JSON.parse(text); }
+                    catch (e) { return {code: -1, message: 'HTTP ' + r.status + ' non-JSON'}; }
+                } catch (e) { return {code: -1, message: String(e)}; }
+            }""",
+            url,
+        )
+        return res or {}
 
     async def get_creator_all_fans(
         self,
@@ -606,7 +646,16 @@ class BilibiliClient(AbstractApiClient, ProxyRefreshMixin):
         offset = ""
         has_more = True
         while has_more and len(result) < max_count:
-            dynamics_res = await self.get_creator_dynamics(creator_id, offset)
+            try:
+                dynamics_res = await self.get_creator_dynamics(creator_id, offset)
+            except Exception as e:
+                # B站风控常在翻到第二页时返回 412：中断翻页但不能把已拿到的第一页
+                # 也丢掉（丢了会让上层误以为本次抓取一无所获，评论抓取也被跳过）。
+                utils.logger.warning(
+                    f"[BilibiliClient.get_creator_all_dynamics] creator {creator_id} "
+                    f"pagination stopped after {len(result)} items: {e}"
+                )
+                break
             dynamics_list: List[Dict] = dynamics_res["items"]
             has_more = dynamics_res["has_more"]
             offset = dynamics_res["offset"]

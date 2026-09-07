@@ -81,6 +81,10 @@ class BilibiliUpDynamic(Base):
     total_comments = Column(Integer, comment='总评论数')
     total_forwards = Column(Integer, comment='总转发数')
     total_liked = Column(Integer, comment='总点赞数')
+    aid = Column(String(64), comment='视频帖aid(纯文字/图文动态为空)')
+    bvid = Column(String(64), comment='视频帖bvid')
+    title = Column(String(255), comment='视频帖标题')
+    creator_uid = Column(String(32), comment='创作者B站UID(本地自用)')
     add_ts = Column(BigInteger, comment='添加时间戳')
     last_modify_ts = Column(BigInteger, comment='最后修改时间戳')
 

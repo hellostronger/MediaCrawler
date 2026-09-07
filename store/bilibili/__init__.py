@@ -155,6 +155,9 @@ async def batch_update_bilibili_creator_dynamics(creator_info: Dict, dynamics_li
         dynamic_comment: int = dynamic_stat["comment"]["count"]
         dynamic_forward: int = dynamic_stat["forward"]["count"]
         dynamic_like: int = dynamic_stat["like"]["count"]
+        # 视频帖元数据（文字/图文动态没有 major.archive，取空串）
+        major = dynamic_item["modules"]["module_dynamic"].get("major") or {}
+        archive = major.get("archive") or {}
         dynamic_info: Dict = {
             "dynamic_id": dynamic_id,
             "text": dynamic_text,
@@ -163,6 +166,10 @@ async def batch_update_bilibili_creator_dynamics(creator_info: Dict, dynamics_li
             "total_comments": dynamic_comment,
             "total_forwards": dynamic_forward,
             "total_liked": dynamic_like,
+            "aid": str(archive.get("aid") or ""),
+            "bvid": archive.get("bvid") or "",
+            "title": archive.get("title") or "",
+            "creator_uid": str(creator_info.get("id") or ""),
         }
         await update_bilibili_creator_dynamic(creator_info=creator_info, dynamic_info=dynamic_info)
 
@@ -185,5 +192,9 @@ async def update_bilibili_creator_dynamic(creator_info: Dict, dynamic_info: Dict
         "total_liked": dynamic_info["total_liked"],
         "last_modify_ts": utils.get_current_timestamp(),
     }
+    # 本地自用扩展字段：真实 UID 与视频帖元数据（DB 模式由模型可空列承接，JSONL 模式直接透传）
+    for extra_key in ("aid", "bvid", "title", "creator_uid"):
+        if dynamic_info.get(extra_key):
+            save_dynamic_item[extra_key] = dynamic_info[extra_key]
 
     await BiliStoreFactory.create_store().store_dynamic(dynamic_item=save_dynamic_item)

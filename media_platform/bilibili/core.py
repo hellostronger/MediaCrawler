@@ -713,14 +713,88 @@ class BilibiliCrawler(AbstractCrawler):
         async with semaphore:
             try:
                 utils.logger.info(f"[BilibiliCrawler.get_dynamics] begin get creator_id: {creator_id} dynamics ...")
-                await self.bili_client.get_creator_all_dynamics(
+                dynamics_list: List[Dict] = await self.bili_client.get_creator_all_dynamics(
                     creator_info=creator_info,
                     crawl_interval=config.CRAWLER_MAX_SLEEP_SEC,
                     callback=bilibili_store.batch_update_bilibili_creator_dynamics,
                     max_count=config.CRAWLER_MAX_DYNAMICS_COUNT_SINGLENOTES,
                 )
+                # best-effort 拉取每条动态的评论（失败不影响动态数据）
+                await self.get_dynamics_comments(creator_info, dynamics_list)
 
             except DataFetchError as ex:
                 utils.logger.error(f"[BilibiliCrawler.get_dynamics] get creator_id: {creator_id} dynamics error: {ex}")
             except Exception as e:
                 utils.logger.error(f"[BilibiliCrawler.get_dynamics] may be been blocked, err:{e}")
+
+    async def get_dynamics_comments(self, creator_info: Dict, dynamics_list: List[Dict]):
+        """
+        fetch comments for each dynamic (best-effort)
+        - video dynamics: reuse get_video_all_comments by aid (reply type 1)
+        - text/image dynamics: use get_dynamic_comments by dynamic_id (reply type 17)
+        :param creator_info: creator dict (used for store anonymize fields)
+        :param dynamics_list: raw dynamics items from get_creator_all_dynamics
+        """
+        if not config.ENABLE_GET_COMMENTS or not dynamics_list:
+            return
+
+        async def fetch_one(dynamic_item: Dict):
+            dynamic_id: str = dynamic_item["id_str"]
+            module_dynamic = dynamic_item.get("modules", {}).get("module_dynamic", {})
+            major = module_dynamic.get("major") or {}
+            archive = major.get("archive") or {}
+            aid = str(archive.get("aid") or "")
+            try:
+                if aid:
+                    # 视频帖：复用现有视频评论抓取（type=1，含子评论开关逻辑）
+                    await self.bili_client.get_video_all_comments(
+                        video_id=aid,
+                        crawl_interval=config.CRAWLER_MAX_SLEEP_SEC,
+                        is_fetch_sub_comments=config.ENABLE_GET_SUB_COMMENTS,
+                        callback=bilibili_store.batch_update_bilibili_video_comments,
+                        max_count=config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES,
+                    )
+                else:
+                    # 纯文字/图文动态：按动态ID取评论（type=17），翻页取到 max_count 为止
+                    comments: List[Dict] = []
+                    next_page = 0
+                    while len(comments) < config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES:
+                        res: Dict = await self.bili_client.get_dynamic_comments(dynamic_id, next=next_page)
+                        replies = res.get("replies") or []
+                        comments.extend(replies)
+                        cursor = res.get("cursor") or {}
+                        if not cursor.get("is_end", True) and replies:
+                            next_page = cursor.get("next", 0)
+                            await asyncio.sleep(config.CRAWLER_MAX_SLEEP_SEC)
+                        else:
+                            break
+                        if next_page == 0:  # 防御：游标未推进则退出，避免死循环
+                            break
+                    await bilibili_store.batch_update_bilibili_video_comments(
+                        video_id=dynamic_id, comments=comments[: config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES]
+                    )
+                    utils.logger.info(
+                        f"[BilibiliCrawler.get_dynamics_comments] dynamic {dynamic_id} got {len(comments)} comments"
+                    )
+            except DataFetchError as e:
+                # type=17 对视频帖的 dynamic_id 会返回 -404（评论挂在 aid 上）。
+                # 动态接口偶尔带不出 aid，这里补一次 type=1 兜底，别让视频帖评论漏抓。
+                utils.logger.warning(
+                    f"[BilibiliCrawler.get_dynamics_comments] dynamic {dynamic_id} type17 failed ({e}), fallback to type1 by dynamic_id"
+                )
+                try:
+                    await self.bili_client.get_video_all_comments(
+                        video_id=dynamic_id,
+                        crawl_interval=config.CRAWLER_MAX_SLEEP_SEC,
+                        is_fetch_sub_comments=config.ENABLE_GET_SUB_COMMENTS,
+                        callback=bilibili_store.batch_update_bilibili_video_comments,
+                        max_count=config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES,
+                    )
+                except Exception as e2:
+                    utils.logger.error(f"[BilibiliCrawler.get_dynamics_comments] dynamic {dynamic_id} fallback error: {e2}")
+            except Exception as e:
+                utils.logger.error(f"[BilibiliCrawler.get_dynamics_comments] dynamic {dynamic_id} comments error: {e}")
+
+        for dynamic_item in dynamics_list:
+            await fetch_one(dynamic_item)
+            await asyncio.sleep(config.CRAWLER_MAX_SLEEP_SEC)

@@ -308,33 +308,43 @@ class WeiboCrawler(AbstractCrawler):
         """
         utils.logger.info("[WeiboCrawler.get_creators_and_notes] Begin get weibo creators")
         for user_id in config.WEIBO_CREATOR_ID_LIST:
-            createor_info_res: Dict = await self.wb_client.get_creator_info_by_id(creator_id=user_id)
-            if createor_info_res:
-                createor_info: Dict = createor_info_res.get("userInfo", {})
-                utils.logger.info(f"[WeiboCrawler.get_creators_and_notes] creator info: {createor_info}")
-                if not createor_info:
-                    raise DataFetchError("Get creator info error")
-                await weibo_store.save_creator(user_id, user_info=createor_info)
+            # 单个博主失败（风控/注销/接口变动）不能中断整轮，其余博主继续
+            try:
+                await self._crawl_one_creator(user_id)
+            except DataFetchError as ex:
+                utils.logger.error(f"[WeiboCrawler.get_creators_and_notes] creator {user_id} DataFetchError: {ex}")
+            except Exception as ex:
+                utils.logger.error(f"[WeiboCrawler.get_creators_and_notes] creator {user_id} error: {ex}")
 
-                # Create a wrapper callback to get full text before saving data
-                async def save_notes_with_full_text(note_list: List[Dict]):
-                    # If full text fetching is enabled, batch get full text first
-                    updated_note_list = await self.batch_get_notes_full_text(note_list)
-                    await weibo_store.batch_update_weibo_notes(updated_note_list)
+    async def _crawl_one_creator(self, user_id: str) -> None:
+        createor_info_res: Dict = await self.wb_client.get_creator_info_by_id(creator_id=user_id)
+        if createor_info_res:
+            createor_info: Dict = createor_info_res.get("userInfo", {})
+            utils.logger.info(f"[WeiboCrawler.get_creators_and_notes] creator info: {createor_info}")
+            if not createor_info:
+                raise DataFetchError("Get creator info error")
+            await weibo_store.save_creator(user_id, user_info=createor_info)
 
-                # Get all note information of the creator
-                all_notes_list = await self.wb_client.get_all_notes_by_creator_id(
-                    creator_id=user_id,
-                    container_id=f"107603{user_id}",
-                    crawl_interval=0,
-                    callback=save_notes_with_full_text,
-                )
+            # Create a wrapper callback to get full text before saving data
+            async def save_notes_with_full_text(note_list: List[Dict]):
+                # If full text fetching is enabled, batch get full text first
+                updated_note_list = await self.batch_get_notes_full_text(note_list)
+                await weibo_store.batch_update_weibo_notes(updated_note_list)
 
-                note_ids = [note_item.get("mblog", {}).get("id") for note_item in all_notes_list if note_item.get("mblog", {}).get("id")]
-                await self.batch_get_notes_comments(note_ids)
+            # Get all note information of the creator
+            all_notes_list = await self.wb_client.get_all_notes_by_creator_id(
+                creator_id=user_id,
+                container_id=f"107603{user_id}",
+                crawl_interval=config.CRAWLER_MAX_SLEEP_SEC,
+                callback=save_notes_with_full_text,
+                max_count=config.CRAWLER_MAX_NOTES_COUNT,
+            )
 
-            else:
-                utils.logger.error(f"[WeiboCrawler.get_creators_and_notes] get creator info error, creator_id:{user_id}")
+            note_ids = [note_item.get("mblog", {}).get("id") for note_item in all_notes_list if note_item.get("mblog", {}).get("id")]
+            await self.batch_get_notes_comments(note_ids)
+
+        else:
+            utils.logger.error(f"[WeiboCrawler.get_creators_and_notes] get creator info error, creator_id:{user_id}")
 
     async def create_weibo_client(self, httpx_proxy: Optional[str]) -> WeiboClient:
         """Create xhs client"""
