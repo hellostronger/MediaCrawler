@@ -24,7 +24,9 @@
 # @Desc    : bilibili login implementation class
 
 import asyncio
+import base64
 import functools
+import os
 import sys
 from typing import Optional
 
@@ -81,11 +83,18 @@ class BilibiliLogin(AbstractLogin):
         """login bilibili website and keep webdriver login state"""
         utils.logger.info("[BilibiliLogin.login_by_qrcode] Begin login bilibili by qrcode ...")
 
-        # click login button
-        login_button_ele = self.context_page.locator(
-            "xpath=//div[@class='right-entry__outside go-login-btn']//div"
-        )
-        await login_button_ele.click()
+        # click login entry (2026-11 改版：旧 XPath right-entry__outside go-login-btn 已不存在)
+        # 第一步：点右上角头像入口，弹出登录引导卡片
+        try:
+            await self.context_page.locator(".right-entry").click(timeout=10000)
+        except Exception:
+            await self.context_page.locator(".go-login-btn").click(timeout=10000)
+        await asyncio.sleep(1)
+        # 第二步：点引导卡片里的「立即登录」，弹出二维码弹窗
+        login_btn = self.context_page.locator(".login-panel-popover .login-btn")
+        if await login_btn.count() == 0:
+            login_btn = self.context_page.locator(".login-btn")
+        await login_btn.first.click(timeout=10000)
         await asyncio.sleep(1)
         # find login qrcode
         qrcode_img_selector = "//div[@class='login-scan-box']//img"
